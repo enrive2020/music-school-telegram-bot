@@ -6,11 +6,36 @@
 когда клиент нажмёт на кнопку и получит белиберду.
 """
 
+from datetime import time
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+
+# Ключи дней недели. Порядок совпадает с date.weekday() (0 = понедельник),
+# поэтому по индексу из даты сразу получаем нужный ключ конфига.
+WEEKDAY_KEYS: tuple[str, ...] = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+Weekday = Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def _to_minutes(t: time) -> int:
+    """Время суток → минуты от полуночи. Для арифметики над сеткой."""
+    return t.hour * 60 + t.minute
+
+
+def _from_minutes(total: int) -> time:
+    """Минуты от полуночи → время суток."""
+    return time(total // 60, total % 60)
 
 
 class CatalogError(Exception):
@@ -41,6 +66,116 @@ class Direction(BaseModel):
         return f"{self.emoji} {self.title}".strip()
 
 
+class TimeInterval(BaseModel):
+    """Рабочий интервал одного дня. Полуоткрытый: [start, end)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    start: time
+    end: time
+
+    @model_validator(mode="before")
+    @classmethod
+    def _parse_compact(cls, data: object) -> object:
+        """Позволяет писать «12:00-20:00» вместо {start: …, end: …}.
+
+        Конфиг правит владелец школы, а не программист: компактная
+        строка читается легче вложенного объекта.
+        """
+        if isinstance(data, str):
+            parts = data.split("-")
+            if len(parts) != 2:
+                raise ValueError(
+                    f"интервал '{data}' должен быть в виде «12:00-20:00»"
+                )
+            return {"start": parts[0].strip(), "end": parts[1].strip()}
+        return data
+
+    @model_validator(mode="after")
+    def _start_before_end(self) -> "TimeInterval":
+        # Некорректное время («25:00») pydantic отсеет сам при разборе time.
+        if self.start >= self.end:
+            raise ValueError(
+                f"конец интервала ({self.end:%H:%M}) должен быть позже "
+                f"начала ({self.start:%H:%M})"
+            )
+        return self
+
+
+class Schedule(BaseModel):
+    """Недельный ШАБЛОН доступного времени.
+
+    Здесь только «какие слоты бывают в принципе». Занятость конкретных
+    дат — это состояние во времени, ему место в базе, а не в конфиге.
+    Разделение позволит добавить занятые слоты, не трогая эту схему.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    slot_minutes: int = Field(gt=0, le=240)
+    booking_horizon_days: int = Field(default=14, gt=0, le=90)
+    booking_buffer_hours: int = Field(default=2, ge=0, le=72)
+    # Дня нет в словаре → выходной.
+    week: dict[Weekday, list[TimeInterval]]
+
+    @field_validator("week")
+    @classmethod
+    def _week_usable(cls, week: dict) -> dict:
+        if not week:
+            raise ValueError(
+                "в расписании нет ни одного рабочего дня — записаться некуда"
+            )
+        for day, intervals in week.items():
+            if not intervals:
+                # Пустой список двусмыслен: выходной обозначается
+                # отсутствием ключа, а не пустым значением.
+                raise ValueError(
+                    f"день '{day}' указан без интервалов. "
+                    "Для выходного удалите строку этого дня целиком"
+                )
+        return week
+
+    @model_validator(mode="after")
+    def _intervals_consistent(self) -> "Schedule":
+        for day, intervals in self.week.items():
+            ordered = sorted(intervals, key=lambda iv: iv.start)
+
+            # Пересечения: «10:00-14:00» и «13:00-18:00» дали бы
+            # дублирующиеся слоты в сетке.
+            for prev, cur in zip(ordered, ordered[1:]):
+                if cur.start < prev.end:
+                    raise ValueError(
+                        f"в '{day}' интервалы пересекаются: "
+                        f"{prev.start:%H:%M}-{prev.end:%H:%M} и "
+                        f"{cur.start:%H:%M}-{cur.end:%H:%M}"
+                    )
+
+            # Кратность шагу: иначе последний слот «свисает» за время
+            # закрытия. Например 10:00-14:00 при шаге 45 даёт последний
+            # слот в 13:45, а занятие закончится в 14:30.
+            for iv in intervals:
+                length = _to_minutes(iv.end) - _to_minutes(iv.start)
+                if length % self.slot_minutes != 0:
+                    raise ValueError(
+                        f"в '{day}' интервал {iv.start:%H:%M}-{iv.end:%H:%M} "
+                        f"({length} мин) не делится нацело на шаг "
+                        f"{self.slot_minutes} мин — последний слот выйдет "
+                        "за время закрытия"
+                    )
+        return self
+
+    def slots_for_weekday(self, weekday_key: str) -> list[time]:
+        """Все слоты указанного дня недели, по возрастанию."""
+        slots: list[time] = []
+        for iv in sorted(self.week.get(weekday_key, []), key=lambda x: x.start):
+            current = _to_minutes(iv.start)
+            end = _to_minutes(iv.end)
+            while current < end:  # полуоткрыто: end не входит
+                slots.append(_from_minutes(current))
+                current += self.slot_minutes
+        return slots
+
+
 class SchoolInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -67,6 +202,9 @@ class SchoolInfo(BaseModel):
                 "Примеры: Europe/Moscow, Asia/Almaty, Europe/Minsk"
             ) from None
         return value
+
+    # Расписание обязательно: без него записаться не на что.
+    schedule: Schedule
 
     @property
     def tzinfo(self) -> ZoneInfo:
