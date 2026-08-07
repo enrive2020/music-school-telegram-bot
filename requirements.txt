@@ -16,7 +16,9 @@ PyYAML==6.0.3
 # Разбор и нормализация телефонов (порт Google libphonenumber).
 phonenumbers==9.0.36
 
+# Асинхронный доступ к SQLite (обычный sqlite3 блокирует event loop).
+aiosqlite==0.22.1
+
 # Дальше по фазам добавим:
-#   aiosqlite     — локальная база заявок          (Фаза 5)
 #   gspread       — выгрузка в Google Sheets       (Фаза 6)
 #   pytest        — тесты                          (Фаза 8)

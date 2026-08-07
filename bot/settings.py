@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # поэтому переменная CATALOG_PATH в .env не обязательна.
     catalog_path: Path = Path("config/school.yaml")
 
+    # Файл локальной базы заявок.
+    database_path: Path = Path("data/orders.db")
+
     @field_validator("bot_token")
     @classmethod
     def _token_not_empty(cls, value: str) -> str:
