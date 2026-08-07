@@ -18,7 +18,14 @@ import phonenumbers
 # ── Ограничения ────────────────────────────────────────────────────
 NAME_MIN_LEN = 2
 NAME_MAX_LEN = 60
-NAME_MIN_LETTERS = 2  # «А.» именем не считается
+# Минимальная длина непрерывного «слова» из букв. Считаем именно
+# отрезок подряд идущих букв, а не сумму по всей строке: иначе
+# «А.Б.» проходит как две буквы, хотя именем не является.
+NAME_MIN_LETTERS = 2
+# Сколько одинаковых букв подряд допустимо. Порог 3, а не 2, —
+# иначе сломались бы Алла, Жанна, Филипп, Aaltonen. При этом
+# клавиатурный спам «Ааааа» отсекается.
+NAME_MAX_REPEAT = 3
 
 # Неалфавитные символы, допустимые в имени:
 #   пробел    — составные имена («Анна Мария»)
@@ -31,6 +38,15 @@ NAME_EXTRA_CHARS = frozenset(" -'’.")
 _NAME_FORMAT_ERROR = (
     "Имя может состоять только из букв, пробела, дефиса, апострофа и точки. "
     "Например: «Анна», «Анна П.» или «Жан-Клод»."
+)
+
+_NAME_REPEAT_ERROR = (
+    "Не похоже на имя: слишком много одинаковых букв подряд. "
+    "Напишите, как к вам обращаться."
+)
+
+_NAME_NO_WORD_ERROR = (
+    "Не похоже на имя. Напишите его целиком — например, «Анна» или «Анна П.»."
 )
 
 TIME_MIN_LEN = 2
@@ -74,12 +90,59 @@ def clean_text(raw: str) -> str:
     text = "".join(
         ch for ch in text if unicodedata.category(ch) not in _DROP_CATEGORIES
     )
+
+    # NFC — приведение к «составной» форме.
+    #
+    # Часть клиентов iOS/macOS шлёт «й» и «ё» разложенными: базовая
+    # буква «и» + отдельный знак краткости. У этого знака категория Mn,
+    # он не проходит isalpha() и не входит в белый список символов —
+    # и honest-имя «Андрей» получало отказ. NFC склеивает пару в один
+    # символ «й», после чего она проходит как обычная буква.
+    #
+    # Делаем ПОСЛЕ выреза невидимок: если между буквой и знаком был
+    # вставлен zero-width символ, после его удаления они становятся
+    # соседними и NFC отрабатывает правильно.
+    text = unicodedata.normalize("NFC", text)
+
     return text.strip()
 
 
 def _count_letters(text: str) -> int:
     """Сколько в строке именно букв (не цифр, не эмодзи, не знаков)."""
     return sum(1 for ch in text if ch.isalpha())
+
+
+def _longest_letter_run(text: str) -> int:
+    """Длина самого длинного непрерывного отрезка букв.
+
+    Именно «слово», а не сумма букв по строке: в «А.Б.» букв две,
+    но настоящего слова нет — это не имя.
+    """
+    longest = current = 0
+    for ch in text:
+        if ch.isalpha():
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+    return longest
+
+
+def _has_long_repeat(text: str) -> bool:
+    """Есть ли NAME_MAX_REPEAT+ одинаковых букв подряд («Ааааа»).
+
+    Сравниваем регистронезависимо, иначе «ААА» проскочит. casefold()
+    применяем к одиночным символам уже после NFC — так безопасно.
+    """
+    run = 1
+    for prev, cur in zip(text, text[1:]):
+        if prev.isalpha() and prev.casefold() == cur.casefold():
+            run += 1
+            if run >= NAME_MAX_REPEAT:
+                return True
+        else:
+            run = 1
+    return False
 
 
 def _is_name_char(ch: str) -> bool:
@@ -128,17 +191,29 @@ def validate_name(raw: str) -> str:
         raise ValidationError(_NAME_FORMAT_ERROR)
 
     # Два неалфавитных символа подряд: «Ан..», «Жан--Клод», «А . Б».
+    # Исключение — пара «точка + пробел»: она встречается в легитимном
+    # «И. Иванов», который раньше отсекался наравне с мусором.
     if any(
-        not name[i].isalpha() and not name[i + 1].isalpha()
+        not name[i].isalpha()
+        and not name[i + 1].isalpha()
+        and not (name[i] == "." and name[i + 1] == " ")
         for i in range(len(name) - 1)
     ):
         raise ValidationError(_NAME_FORMAT_ERROR)
 
-    # Отсекает «А.» — формат верный, но имени как такового нет.
-    if _count_letters(name) < NAME_MIN_LETTERS:
-        raise ValidationError(
-            "Не похоже на имя. Напишите его буквами — например, «Анна»."
-        )
+    # Нужно хотя бы одно настоящее слово. Считаем непрерывный отрезок
+    # букв, а не сумму по строке: иначе «А.Б.» и «А-Б» проходят, набрав
+    # две буквы по разным «словам».
+    #
+    # Осознанный размен: имя из одних инициалов «И.И.» теперь отклоняется.
+    # Для музыкальной школы это экзотика, а мусора такой формат пропускает
+    # много. «Анна П.» и «А. Иванов» работают — в них есть слово.
+    if _longest_letter_run(name) < NAME_MIN_LETTERS:
+        raise ValidationError(_NAME_NO_WORD_ERROR)
+
+    # Клавиатурный спам «Ааааа»: формат верный, но именем не является.
+    if _has_long_repeat(name):
+        raise ValidationError(_NAME_REPEAT_ERROR)
 
     return name
 
