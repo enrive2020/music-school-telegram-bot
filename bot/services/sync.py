@@ -14,7 +14,9 @@
 import asyncio
 import logging
 
+from bot.services.notify import AdminNotifier
 from bot.services.sheets import SheetsClient, SheetsError
+from bot.storage.models import OrderStatus
 from bot.storage.orders import OrderRepository
 
 logger = logging.getLogger(__name__)
@@ -33,7 +35,11 @@ MAX_BACKOFF_SECONDS = 30 * 60
 BATCH_SIZE = 50
 
 
-async def sync_worker(orders: OrderRepository, sheets: SheetsClient) -> None:
+async def sync_worker(
+    orders: OrderRepository,
+    sheets: SheetsClient,
+    notifier: AdminNotifier,
+) -> None:
     """Бесконечный цикл выгрузки. Запускается как фоновая задача."""
     delay = POLL_INTERVAL_SECONDS
 
@@ -72,6 +78,13 @@ async def sync_worker(orders: OrderRepository, sheets: SheetsClient) -> None:
             logger.warning("Выгрузка не удалась: %s", e)
             for order in pending:
                 await orders.mark_sync_failed(order.id, str(e))
+
+                # Заявка только что исчерпала лимит попыток — зовём человека.
+                # Проверяем статус после обновления, поэтому алерт уходит
+                # ровно один раз, а не при каждой неудачной попытке.
+                refreshed = await orders.get(order.id)
+                if refreshed is not None and refreshed.status == OrderStatus.FAILED:
+                    await notifier.notify_sync_failed(refreshed, str(e))
 
             delay = min(delay * BACKOFF_FACTOR, MAX_BACKOFF_SECONDS)
             logger.info("Следующая попытка через %d сек", delay)

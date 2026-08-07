@@ -34,8 +34,17 @@ class Settings(BaseSettings):
     # поэтому переменная CATALOG_PATH в .env не обязательна.
     catalog_path: Path = Path("config/school.yaml")
 
+    # Чат администраторов, куда бот шлёт новые заявки.
+    # None = уведомления выключены (бот при этом полностью работоспособен).
+    # У групп ID отрицательный — узнать его можно командой /chatid.
+    admin_chat_id: int | None = None
+
     # Файл локальной базы заявок.
     database_path: Path = Path("data/orders.db")
+
+    # ── Логирование ──
+    log_level: str = "INFO"
+    log_file: Path | None = Path("logs/bot.log")
 
     # ── Google Sheets ──
     # JSON-ключ сервисного аккаунта. Секрет: лежит в secrets/, в git не попадает.
@@ -43,6 +52,17 @@ class Settings(BaseSettings):
     # ID таблицы — кусок URL между /d/ и /edit.
     # Пустая строка = выгрузка выключена, бот работает только на SQLite.
     google_sheet_id: str = ""
+
+    # Пустая строка в .env (ADMIN_CHAT_ID=) означает «не задано».
+    # Без этого pydantic пытается превратить "" в число и падает,
+    # хотя незаполненная необязательная переменная — норма:
+    # именно так выглядит свежескопированный .env.example.
+    @field_validator("admin_chat_id", "log_file", mode="before")
+    @classmethod
+    def _empty_string_is_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @field_validator("bot_token")
     @classmethod
