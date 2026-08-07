@@ -30,6 +30,7 @@ from bot.handlers.order import router as order_router
 from bot.handlers.start import router as start_router
 from bot.logging_setup import setup_logging
 from bot.services.notify import AdminNotifier
+from bot.services.schedule import ScheduleService
 from bot.services.sheets import SheetsClient
 from bot.services.sync import sync_worker
 from bot.settings import load_settings
@@ -90,11 +91,23 @@ async def main() -> None:
     # Всё, что передано именованными аргументами, aiogram подставляет
     # в хендлеры по имени параметра (dependency injection). Так репозиторий
     # попадает в confirm_order, не будучи глобальной переменной.
+    # Расписание: превращает недельный шаблон из конфига в конкретные
+    # даты и слоты. Единственная точка, где рождается список доступного
+    # времени, — поэтому будущая проверка занятости встанет сюда же.
+    schedule = ScheduleService(catalog.school.schedule, catalog.school.tzinfo)
+    logging.info(
+        "Расписание: шаг %d мин, горизонт %d дн, доступных дней сейчас: %d",
+        catalog.school.schedule.slot_minutes,
+        catalog.school.schedule.booking_horizon_days,
+        len(schedule.available_days()),
+    )
+
     dp = Dispatcher(
         storage=MemoryStorage(),
         catalog=catalog,
         orders=orders,
         notifier=notifier,
+        schedule=schedule,
     )
 
     # Порядок важен: роутеры команд (start, admin) идут ПЕРВЫМИ, чтобы

@@ -5,9 +5,17 @@
 клавиатуре и менять оформление в одном месте.
 """
 
+from datetime import date, time
+
 from aiogram.filters.callback_data import CallbackData
-from aiogram.types import InlineKeyboardMarkup, ReplyKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
+
+from bot.formatters import format_day_button, time_to_hm
 
 # ── callback_data без параметров: простые строковые константы ──────
 ORDER_BACK = "order_back"        # шаг назад
@@ -30,6 +38,30 @@ class ForWhomCallback(CallbackData, prefix="whom"):
     value: str
 
 
+class DayCallback(CallbackData, prefix="day"):
+    """Выбор даты занятия. value — ISO-дата «2026-08-09».
+
+    Хранить именно машинную дату, а не «9 авг»: по ней потом
+    пересобирается сетка времени и проверяется, не прошёл ли слот.
+    """
+
+    value: str
+
+
+class SlotCallback(CallbackData, prefix="slot"):
+    """Выбор времени. hm — «1800», НЕ «18:00».
+
+    CallbackData склеивает поля через двоеточие, поэтому значение
+    с двоеточием внутри сломало бы разбор строки обратно.
+
+    Дату дублируем в самой кнопке, а не берём только из состояния:
+    так нажатие из старого сообщения останется осмысленным.
+    """
+
+    day: str  # ISO-дата
+    hm: str   # время как HHMM
+
+
 def _nav_row(builder: InlineKeyboardBuilder, *, with_back: bool = True) -> None:
     """Добавляет ряд навигации в конец клавиатуры."""
     buttons = []
@@ -38,6 +70,19 @@ def _nav_row(builder: InlineKeyboardBuilder, *, with_back: bool = True) -> None:
     buttons.append(("✖️ Отмена", ORDER_CANCEL))
     for text, data in buttons:
         builder.button(text=text, callback_data=data)
+
+
+def _nav_buttons() -> list[InlineKeyboardButton]:
+    """Кнопки навигации готовым списком.
+
+    Нужны там, где клавиатура строится сеткой через adjust():
+    навигацию надо положить ОТДЕЛЬНЫМ рядом через row(), иначе
+    она попадёт в сетку дат и разъедет вместе с ней.
+    """
+    return [
+        InlineKeyboardButton(text="← Назад", callback_data=ORDER_BACK),
+        InlineKeyboardButton(text="✖️ Отмена", callback_data=ORDER_CANCEL),
+    ]
 
 
 def for_whom_keyboard() -> InlineKeyboardMarkup:
@@ -55,6 +100,42 @@ def text_step_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     _nav_row(builder)
     builder.adjust(2)
+    return builder.as_markup()
+
+
+def day_keyboard(days: list[date]) -> InlineKeyboardMarkup:
+    """Сетка доступных дат.
+
+    По две кнопки в ряд: подпись «9 авг, сб» помещается целиком,
+    а список не растягивается в простыню на телефоне.
+    """
+    builder = InlineKeyboardBuilder()
+    for day in days:
+        builder.button(
+            text=format_day_button(day),
+            callback_data=DayCallback(value=day.isoformat()),
+        )
+    builder.adjust(2)
+    # Навигация отдельным рядом снизу: row() добавляет её после
+    # уже разложенных кнопок, не смешиваясь с сеткой дат.
+    builder.row(*_nav_buttons())
+    return builder.as_markup()
+
+
+def time_slots_keyboard(day: date, slots: list[time]) -> InlineKeyboardMarkup:
+    """Сетка времени выбранного дня.
+
+    По три в ряд — привычный вид «часовой сетки», и 8 слотов
+    укладываются в три компактных ряда.
+    """
+    builder = InlineKeyboardBuilder()
+    for slot in slots:
+        builder.button(
+            text=f"{slot:%H:%M}",
+            callback_data=SlotCallback(day=day.isoformat(), hm=time_to_hm(slot)),
+        )
+    builder.adjust(3)
+    builder.row(*_nav_buttons())
     return builder.as_markup()
 
 
