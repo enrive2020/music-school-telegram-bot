@@ -15,6 +15,7 @@
 import asyncio
 import logging
 import sys
+from contextlib import suppress
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -25,6 +26,8 @@ from bot.catalog import CatalogError, load_catalog
 from bot.handlers.catalog import router as catalog_router
 from bot.handlers.order import router as order_router
 from bot.handlers.start import router as start_router
+from bot.services.sheets import SheetsClient
+from bot.services.sync import sync_worker
 from bot.settings import load_settings
 from bot.storage.database import connect, init_schema
 from bot.storage.orders import OrderRepository
@@ -83,12 +86,39 @@ async def main() -> None:
     dp.include_router(catalog_router)
     dp.include_router(order_router)
 
+    # Фоновая выгрузка в Google Sheets. Включается только если задан
+    # GOOGLE_SHEET_ID: без него бот полноценно работает на одном SQLite,
+    # что удобно для разработки и как аварийный режим.
+    sync_task: asyncio.Task | None = None
+    if settings.google_sheet_id:
+        sheets = SheetsClient(
+            credentials_file=settings.google_credentials_file,
+            sheet_id=settings.google_sheet_id,
+            tz=catalog.school.tzinfo,
+        )
+        # create_task запускает корутину «рядом» с polling: обе живут
+        # в одном event loop и по очереди отдают друг другу управление.
+        sync_task = asyncio.create_task(sync_worker(orders, sheets))
+    else:
+        logging.warning(
+            "GOOGLE_SHEET_ID не задан — выгрузка в таблицу выключена, "
+            "заявки копятся в локальной базе"
+        )
+
     try:
         logging.info("Бот запускается (long polling)…")
         # start_polling крутится бесконечно и сам аккуратно закрывает
         # соединения при остановке (Ctrl+C).
         await dp.start_polling(bot)
     finally:
+        # Останавливаем фоновую задачу и ждём, пока она свернётся.
+        if sync_task is not None:
+            sync_task.cancel()
+            # suppress: cancel() всегда поднимает CancelledError —
+            # это штатное завершение, а не ошибка.
+            with suppress(asyncio.CancelledError):
+                await sync_task
+
         # Закрываем базу в любом случае — даже если бот падает
         # с исключением. Иначе последняя запись может не долететь на диск.
         await conn.close()

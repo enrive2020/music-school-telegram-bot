@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     # Файл локальной базы заявок.
     database_path: Path = Path("data/orders.db")
 
+    # ── Google Sheets ──
+    # JSON-ключ сервисного аккаунта. Секрет: лежит в secrets/, в git не попадает.
+    google_credentials_file: Path = Path("secrets/google-credentials.json")
+    # ID таблицы — кусок URL между /d/ и /edit.
+    # Пустая строка = выгрузка выключена, бот работает только на SQLite.
+    google_sheet_id: str = ""
+
     @field_validator("bot_token")
     @classmethod
     def _token_not_empty(cls, value: str) -> str:

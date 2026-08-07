@@ -19,6 +19,14 @@ phonenumbers==9.0.36
 # Асинхронный доступ к SQLite (обычный sqlite3 блокирует event loop).
 aiosqlite==0.22.1
 
+# Работа с Google Sheets. Тянет за собой google-auth для авторизации
+# по ключу сервисного аккаунта.
+gspread==6.2.1
+
+# База часовых поясов для zoneinfo. В Linux и macOS она есть в системе,
+# а в Windows и в slim-образах Docker — нет. Без неё падает
+# ZoneInfo("Europe/Moscow"), поэтому ставим явно.
+tzdata==2026.3
+
 # Дальше по фазам добавим:
-#   gspread       — выгрузка в Google Sheets       (Фаза 6)
 #   pytest        — тесты                          (Фаза 8)
