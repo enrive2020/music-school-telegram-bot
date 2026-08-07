@@ -17,6 +17,8 @@
 будет в Фазе 5, уведомление админам — в Фазе 7.
 """
 
+import logging
+
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
@@ -43,6 +45,8 @@ from bot.keyboards.order import (
     text_step_keyboard,
 )
 from bot.states.order import OrderForm
+from bot.storage.models import NewOrder
+from bot.storage.orders import OrderRepository
 from bot.validators import (
     ValidationError,
     format_phone_display,
@@ -51,6 +55,8 @@ from bot.validators import (
     validate_phone,
     validate_time,
 )
+
+logger = logging.getLogger(__name__)
 
 router = Router(name="order")
 
@@ -368,16 +374,61 @@ async def cancel_order_command(message: Message, state: FSMContext) -> None:
 
 
 @router.callback_query(F.data == ORDER_CONFIRM, StateFilter(OrderForm.confirm))
-async def confirm_order(callback: CallbackQuery, state: FSMContext) -> None:
+async def confirm_order(
+    callback: CallbackQuery,
+    state: FSMContext,
+    catalog: Catalog,
+    orders: OrderRepository,
+) -> None:
+    """Клиент подтвердил заявку — сохраняем её в базу.
+
+    Сохранение идёт ПЕРВЫМ действием, до любых внешних вызовов.
+    Выгрузка в Google Sheets (Фаза 6) и уведомление админам (Фаза 7)
+    будут работать уже с сохранённой записью, поэтому их падение
+    не может привести к потере заявки.
+    """
     message = _require_message(callback)
-    # Фаза 4 — по-прежнему заглушка. В Фазе 5 здесь появится сохранение
-    # в SQLite, в Фазе 7 — уведомление администраторам.
+    data = await state.get_data()
+
+    # Снимок направления на момент заявки: если позже его переименуют
+    # или изменят цену, заявка сохранит то, что видел клиент.
+    direction = catalog.get_direction(data["direction_id"])
+
+    new_order = NewOrder(
+        telegram_user_id=callback.from_user.id,
+        telegram_username=callback.from_user.username,
+        direction_id=data["direction_id"],
+        direction_title=direction.title if direction else data["direction_id"],
+        price_per_lesson=direction.price_per_lesson if direction else 0,
+        for_whom=data["for_whom"],
+        name=data["name"],
+        phone=data["phone"],
+        preferred_time=data["time"],
+        comment=data.get("comment", ""),
+    )
+
+    try:
+        order = await orders.create(new_order)
+    except Exception:
+        # Локальная база упасть почти не может, но если это случилось —
+        # НЕ говорим клиенту «готово». Состояние не сбрасываем: данные
+        # анкеты остаются в FSM, и человек может нажать «Подтвердить»
+        # ещё раз, ничего не вводя заново.
+        logger.exception("Не удалось сохранить заявку")
+        await callback.answer(
+            "Не удалось сохранить заявку. Попробуйте нажать «Подтвердить» ещё раз.",
+            show_alert=True,
+        )
+        return
+
     await state.clear()
     if message is not None:
         await message.edit_text(
-            "✅ Заявка оформлена!\n\n"
-            "Спасибо, мы свяжемся с вами.\n"
-            "<i>(Сохранение и уведомление админам добавим на следующих этапах.)</i>"
+            f"✅ Заявка №{order.id} принята!\n\n"
+            f"{order.direction_title} — {FOR_WHOM_LABELS.get(order.for_whom, order.for_whom)}\n"
+            f"Мы позвоним на {format_phone_display(order.phone)}, "
+            "чтобы подтвердить время.\n\n"
+            "Спасибо! 🎵"
         )
     await callback.answer("Готово!")
 
