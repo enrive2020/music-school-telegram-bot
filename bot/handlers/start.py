@@ -7,6 +7,7 @@ from aiogram.types import Message
 
 from bot.catalog import Catalog
 from bot.handlers.catalog import menu_text
+from bot.handlers.common import drop_reply_keyboard
 from bot.keyboards.catalog import directions_keyboard
 
 router = Router(name="start")
@@ -22,6 +23,9 @@ async def cmd_start(message: Message, state: FSMContext, catalog: Catalog) -> No
     # /start в любой момент = «начать сначала»: сбрасываем незаконченную
     # анкету, чтобы клиент не остался запертым в состоянии ввода.
     await state.clear()
+    # Если /start пришёл с шага телефона, внизу висит reply-клавиатура —
+    # убираем её, иначе она останется поверх меню направлений.
+    await drop_reply_keyboard(message)
 
     user_name = message.from_user.first_name if message.from_user else "друг"
 
