@@ -45,6 +45,9 @@ class SchoolInfo(BaseModel):
 
     name: str = Field(min_length=1)
     currency: str = "₽"
+    # Двухбуквенный код страны (ISO 3166-1 alpha-2) для разбора
+    # телефонов, введённых без кода страны.
+    phone_region: str = Field(default="RU", pattern=r"^[A-Z]{2}$")
 
 
 class Catalog(BaseModel):
