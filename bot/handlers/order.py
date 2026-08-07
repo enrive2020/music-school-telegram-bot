@@ -44,6 +44,7 @@ from bot.keyboards.order import (
     phone_keyboard,
     text_step_keyboard,
 )
+from bot.services.notify import AdminNotifier
 from bot.states.order import OrderForm
 from bot.storage.models import NewOrder
 from bot.storage.orders import OrderRepository
@@ -379,6 +380,7 @@ async def confirm_order(
     state: FSMContext,
     catalog: Catalog,
     orders: OrderRepository,
+    notifier: AdminNotifier,
 ) -> None:
     """Клиент подтвердил заявку — сохраняем её в базу.
 
@@ -431,6 +433,11 @@ async def confirm_order(
             "Спасибо! 🎵"
         )
     await callback.answer("Готово!")
+
+    # Уведомляем администраторов ПОСЛЕ ответа клиенту: он уже получил
+    # подтверждение и не ждёт. Метод сам гасит свои ошибки, поэтому
+    # выкинутый из чата бот не превратится в сбой для клиента.
+    await notifier.notify_new_order(order)
 
 
 # ══════════════════════════════════════════════════════════════════
