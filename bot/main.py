@@ -23,9 +23,13 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.catalog import CatalogError, load_catalog
+from bot.handlers.admin import router as admin_router
 from bot.handlers.catalog import router as catalog_router
+from bot.handlers.errors import router as errors_router
 from bot.handlers.order import router as order_router
 from bot.handlers.start import router as start_router
+from bot.logging_setup import setup_logging
+from bot.services.notify import AdminNotifier
 from bot.services.sheets import SheetsClient
 from bot.services.sync import sync_worker
 from bot.settings import load_settings
@@ -34,15 +38,13 @@ from bot.storage.orders import OrderRepository
 
 
 async def main() -> None:
-    # Пока логируем в консоль. Файл и полноценный формат — в Фазе 7.
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-    )
-
     # Настройки читаются один раз на старте. Если токена нет —
     # упадём прямо здесь, с понятным текстом, а не при первом сообщении.
     settings = load_settings()
+
+    # Логирование настраиваем сразу после настроек: всё, что случится
+    # дальше, должно попасть и в консоль, и в файл с ротацией.
+    setup_logging(settings.log_level, settings.log_file)
 
     # Каталог — тоже на старте и тоже «падаем сразу»: опечатка
     # в YAML не должна доживать до первого клиента.
@@ -74,17 +76,36 @@ async def main() -> None:
     # перезапуске бота незаконченные анкеты пропадают. Для продакшена
     # заменяется на RedisStorage без изменения обработчиков.
     #
+    # Уведомления администраторам. Без ADMIN_CHAT_ID бот работает
+    # полноценно — просто молча, что удобно при разработке.
+    notifier = AdminNotifier(
+        bot=bot, chat_id=settings.admin_chat_id, tz=catalog.school.tzinfo
+    )
+    if not notifier.enabled:
+        logging.warning(
+            "ADMIN_CHAT_ID не задан — уведомления о заявках выключены. "
+            "Узнать ID чата можно командой /chatid"
+        )
+
     # Всё, что передано именованными аргументами, aiogram подставляет
     # в хендлеры по имени параметра (dependency injection). Так репозиторий
     # попадает в confirm_order, не будучи глобальной переменной.
-    dp = Dispatcher(storage=MemoryStorage(), catalog=catalog, orders=orders)
+    dp = Dispatcher(
+        storage=MemoryStorage(),
+        catalog=catalog,
+        orders=orders,
+        notifier=notifier,
+    )
 
-    # Порядок важен: роутер команд (start) идёт ПЕРВЫМ, чтобы /start
-    # срабатывал даже посреди анкеты и сбрасывал её, а не воспринимался
-    # как текстовый ввод шага.
+    # Порядок важен: роутеры команд (start, admin) идут ПЕРВЫМИ, чтобы
+    # /start и /chatid срабатывали даже посреди анкеты, а не
+    # воспринимались как текстовый ввод шага.
     dp.include_router(start_router)
+    dp.include_router(admin_router)
     dp.include_router(catalog_router)
     dp.include_router(order_router)
+    # Обработчик ошибок — последним: он ловит то, что упало в остальных.
+    dp.include_router(errors_router)
 
     # Фоновая выгрузка в Google Sheets. Включается только если задан
     # GOOGLE_SHEET_ID: без него бот полноценно работает на одном SQLite,
@@ -98,7 +119,7 @@ async def main() -> None:
         )
         # create_task запускает корутину «рядом» с polling: обе живут
         # в одном event loop и по очереди отдают друг другу управление.
-        sync_task = asyncio.create_task(sync_worker(orders, sheets))
+        sync_task = asyncio.create_task(sync_worker(orders, sheets, notifier))
     else:
         logging.warning(
             "GOOGLE_SHEET_ID не задан — выгрузка в таблицу выключена, "
