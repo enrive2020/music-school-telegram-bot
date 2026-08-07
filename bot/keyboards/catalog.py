@@ -10,6 +10,7 @@ from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.catalog import Catalog
+from bot.keyboards.order import StartOrderCallback
 
 
 class DirectionCallback(CallbackData, prefix="dir"):
@@ -42,11 +43,17 @@ def directions_keyboard(catalog: Catalog) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def direction_details_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура карточки направления: пока только «назад».
+def direction_details_keyboard(direction_id: str) -> InlineKeyboardMarkup:
+    """Клавиатура карточки направления: «Записаться» (вход в анкету) + «назад».
 
-    В Фазе 3 сюда добавится кнопка «Записаться» — вход в анкету FSM.
+    direction_id зашивается в кнопку «Записаться», чтобы анкета сразу
+    знала выбранное направление.
     """
     builder = InlineKeyboardBuilder()
+    builder.button(
+        text="✍️ Записаться",
+        callback_data=StartOrderCallback(direction_id=direction_id),
+    )
     builder.button(text="← Назад к направлениям", callback_data=BACK_TO_MENU)
+    builder.adjust(1)  # каждая кнопка на своей строке
     return builder.as_markup()

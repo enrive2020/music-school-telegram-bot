@@ -62,7 +62,8 @@ async def show_direction(
     # не даёт редактировать текст, callback.message приходит «пустым».
     if isinstance(callback.message, Message):
         await callback.message.edit_text(
-            text, reply_markup=direction_details_keyboard()
+            text,
+            reply_markup=direction_details_keyboard(callback_data.direction_id),
         )
 
     # Обязательный «квиток» для Telegram: колбэк обработан.

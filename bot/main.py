@@ -19,9 +19,11 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.catalog import CatalogError, load_catalog
 from bot.handlers.catalog import router as catalog_router
+from bot.handlers.order import router as order_router
 from bot.handlers.start import router as start_router
 from bot.settings import load_settings
 
@@ -56,13 +58,21 @@ async def main() -> None:
         # <b>жирный</b> и <i>курсив</i>, не указывая это в каждом answer().
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
-    # Всё, что передано сюда именованными аргументами, aiogram будет
-    # подставлять в хендлеры по имени параметра (dependency injection).
-    dp = Dispatcher(catalog=catalog)
+    # storage — где хранятся состояния FSM и введённые данные.
+    # MemoryStorage держит их в оперативке: просто и быстро, но при
+    # перезапуске бота незаконченные анкеты пропадают. Для продакшена
+    # заменяется на RedisStorage без изменения обработчиков.
+    #
+    # Всё, что передано именованными аргументами, aiogram подставляет
+    # в хендлеры по имени параметра (dependency injection).
+    dp = Dispatcher(storage=MemoryStorage(), catalog=catalog)
 
-    # Подключаем куски диалога. С каждой фазой роутеров будет больше.
+    # Порядок важен: роутер команд (start) идёт ПЕРВЫМ, чтобы /start
+    # срабатывал даже посреди анкеты и сбрасывал её, а не воспринимался
+    # как текстовый ввод шага.
     dp.include_router(start_router)
     dp.include_router(catalog_router)
+    dp.include_router(order_router)
 
     logging.info("Бот запускается (long polling)…")
     # start_polling крутится бесконечно и сам аккуратно закрывает
