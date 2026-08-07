@@ -7,6 +7,8 @@
   диалога с клиентом. Ошибку конфигурации нужно узнавать при запуске.
 """
 
+from pathlib import Path
+
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -27,6 +29,10 @@ class Settings(BaseSettings):
     )
 
     bot_token: str
+
+    # Путь к YAML-каталогу направлений. Значение по умолчанию есть,
+    # поэтому переменная CATALOG_PATH в .env не обязательна.
+    catalog_path: Path = Path("config/school.yaml")
 
     @field_validator("bot_token")
     @classmethod
