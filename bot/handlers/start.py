@@ -2,6 +2,7 @@
 
 from aiogram import Router
 from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from bot.catalog import Catalog
@@ -17,7 +18,11 @@ router = Router(name="start")
 # injection: хендлер не знает, ОТКУДА берётся каталог, — и потому его
 # легко тестировать, подсунув каталог из трёх строчек.
 @router.message(CommandStart())
-async def cmd_start(message: Message, catalog: Catalog) -> None:
+async def cmd_start(message: Message, state: FSMContext, catalog: Catalog) -> None:
+    # /start в любой момент = «начать сначала»: сбрасываем незаконченную
+    # анкету, чтобы клиент не остался запертым в состоянии ввода.
+    await state.clear()
+
     user_name = message.from_user.first_name if message.from_user else "друг"
 
     await message.answer(
