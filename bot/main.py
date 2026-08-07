@@ -26,6 +26,8 @@ from bot.handlers.catalog import router as catalog_router
 from bot.handlers.order import router as order_router
 from bot.handlers.start import router as start_router
 from bot.settings import load_settings
+from bot.storage.database import connect, init_schema
+from bot.storage.orders import OrderRepository
 
 
 async def main() -> None:
@@ -52,6 +54,12 @@ async def main() -> None:
         len(catalog.directions),
     )
 
+    # База — единственный ресурс, который нужно явно закрывать,
+    # поэтому дальше всё оборачиваем в try/finally.
+    conn = await connect(settings.database_path)
+    await init_schema(conn)
+    orders = OrderRepository(conn)
+
     bot = Bot(
         token=settings.bot_token,
         # parse_mode=HTML: в текстах сообщений можно использовать
@@ -64,8 +72,9 @@ async def main() -> None:
     # заменяется на RedisStorage без изменения обработчиков.
     #
     # Всё, что передано именованными аргументами, aiogram подставляет
-    # в хендлеры по имени параметра (dependency injection).
-    dp = Dispatcher(storage=MemoryStorage(), catalog=catalog)
+    # в хендлеры по имени параметра (dependency injection). Так репозиторий
+    # попадает в confirm_order, не будучи глобальной переменной.
+    dp = Dispatcher(storage=MemoryStorage(), catalog=catalog, orders=orders)
 
     # Порядок важен: роутер команд (start) идёт ПЕРВЫМ, чтобы /start
     # срабатывал даже посреди анкеты и сбрасывал её, а не воспринимался
@@ -74,10 +83,16 @@ async def main() -> None:
     dp.include_router(catalog_router)
     dp.include_router(order_router)
 
-    logging.info("Бот запускается (long polling)…")
-    # start_polling крутится бесконечно и сам аккуратно закрывает
-    # соединения при остановке (Ctrl+C).
-    await dp.start_polling(bot)
+    try:
+        logging.info("Бот запускается (long polling)…")
+        # start_polling крутится бесконечно и сам аккуратно закрывает
+        # соединения при остановке (Ctrl+C).
+        await dp.start_polling(bot)
+    finally:
+        # Закрываем базу в любом случае — даже если бот падает
+        # с исключением. Иначе последняя запись может не долететь на диск.
+        await conn.close()
+        logging.info("База закрыта")
 
 
 if __name__ == "__main__":
