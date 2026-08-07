@@ -9,20 +9,27 @@
       сняв кнопки со старого, чтобы их нельзя было нажать повторно.
 Эти два механизма спрятаны в helpers _prompt_via_edit / _prompt_via_send.
 
-В Фазе 3 подтверждение — заглушка: сохранение в БД будет в Фазе 5,
-уведомление админам — в Фазе 7, валидация ввода — в Фазе 4.
+Шаг «телефон» — особый: там reply-клавиатура с кнопкой запроса контакта,
+поэтому на него всегда заходим НОВЫМ сообщением, а при уходе клавиатуру
+убираем (см. _enter_phone_step и drop_reply_keyboard).
+
+В Фазе 4 подтверждение — по-прежнему заглушка: сохранение в БД
+будет в Фазе 5, уведомление админам — в Фазе 7.
 """
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
 
 from bot.catalog import Catalog
 from bot.handlers.catalog import direction_text
+from bot.handlers.common import drop_reply_keyboard
 from bot.keyboards.catalog import direction_details_keyboard
 from bot.keyboards.order import (
+    NAV_BACK_BTN,
+    NAV_CANCEL_BTN,
     ORDER_BACK,
     ORDER_CANCEL,
     ORDER_CONFIRM,
@@ -32,18 +39,33 @@ from bot.keyboards.order import (
     comment_keyboard,
     confirm_keyboard,
     for_whom_keyboard,
+    phone_keyboard,
     text_step_keyboard,
 )
 from bot.states.order import OrderForm
+from bot.validators import (
+    ValidationError,
+    format_phone_display,
+    validate_comment,
+    validate_name,
+    validate_phone,
+    validate_time,
+)
 
 router = Router(name="order")
 
 # ── Тексты шагов ──────────────────────────────────────────────────
 FOR_WHOM_TEXT = "Шаг 1 из 5. Для кого занятие?"
 NAME_TEXT = "Шаг 2 из 5. Как вас зовут? Напишите имя."
-PHONE_TEXT = "Шаг 3 из 5. Напишите номер телефона для связи."
+PHONE_TEXT = (
+    "Шаг 3 из 5. Оставьте номер телефона.\n\n"
+    "Нажмите «📱 Отправить мой номер» — или напишите его вручную."
+)
 TIME_TEXT = "Шаг 4 из 5. В какое время удобно? Например: «будни после 18:00»."
 COMMENT_TEXT = "Шаг 5 из 5. Комментарий или пожелание? Или нажмите «Пропустить»."
+
+CANCEL_TEXT = "Заявка отменена. Чтобы записаться заново — отправьте /start."
+STALE_TEXT = "Эта форма уже завершена. Отправьте /start, чтобы начать заново."
 
 # Человеческие подписи для сохранённых кодов «для кого».
 FOR_WHOM_LABELS = {"child": "Ребёнок", "adult": "Взрослый"}
@@ -60,20 +82,40 @@ async def _prompt_via_edit(message: Message, state: FSMContext, text: str, keybo
     await state.update_data(prompt_id=message.message_id)
 
 
+async def _clear_old_prompt(message: Message, state: FSMContext) -> None:
+    """Снимает кнопки с предыдущего приглашения, чтобы их нельзя
+    было нажать повторно после того, как шаг уже пройден."""
+    data = await state.get_data()
+    old_id = data.get("prompt_id")
+    if not old_id:
+        return
+    try:
+        await message.bot.edit_message_reply_markup(
+            chat_id=message.chat.id, message_id=old_id, reply_markup=None
+        )
+    except TelegramBadRequest:
+        # Сообщение слишком старое, уже без кнопок или это было
+        # сообщение с reply-клавиатурой — не критично.
+        pass
+
+
 async def _prompt_via_send(message: Message, state: FSMContext, text: str, keyboard) -> None:
     """Переход после текстового ввода: шлём новое приглашение,
     предварительно сняв кнопки со старого."""
-    data = await state.get_data()
-    old_id = data.get("prompt_id")
-    if old_id:
-        try:
-            await message.bot.edit_message_reply_markup(
-                chat_id=message.chat.id, message_id=old_id, reply_markup=None
-            )
-        except TelegramBadRequest:
-            # Сообщение слишком старое или уже без кнопок — не критично.
-            pass
+    await _clear_old_prompt(message, state)
     sent = await message.answer(text, reply_markup=keyboard)
+    await state.update_data(prompt_id=sent.message_id)
+
+
+async def _enter_phone_step(message: Message, state: FSMContext) -> None:
+    """Заходит на шаг телефона.
+
+    Всегда НОВЫМ сообщением: reply-клавиатуру невозможно навесить
+    через edit_text — только при отправке.
+    """
+    await _clear_old_prompt(message, state)
+    await state.set_state(OrderForm.phone)
+    sent = await message.answer(PHONE_TEXT, reply_markup=phone_keyboard())
     await state.update_data(prompt_id=sent.message_id)
 
 
@@ -92,25 +134,12 @@ def _confirm_text(data: dict, catalog: Catalog) -> str:
         f"Направление: {direction_label}\n"
         f"Для кого: {FOR_WHOM_LABELS.get(data['for_whom'], data['for_whom'])}\n"
         f"Имя: {data['name']}\n"
-        f"Телефон: {data['phone']}\n"
+        # Храним E.164, а показываем в читаемом виде.
+        f"Телефон: {format_phone_display(data['phone'])}\n"
         f"Удобное время: {data['time']}\n"
         f"Комментарий: {comment}\n\n"
         "Всё верно?"
     )
-
-
-def _clean_text(message: Message) -> str | None:
-    """Базовая защита текстового ввода (полная валидация — Фаза 4).
-
-    Отсекаем пустые сообщения, не-текст (стикеры, фото) и команды,
-    чтобы не сохранить «/help» как имя клиента. None → просим повторить.
-    """
-    if not message.text:
-        return None
-    text = message.text.strip()
-    if not text or text.startswith("/"):
-        return None
-    return text
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -156,32 +185,85 @@ async def choose_for_whom(
 
 @router.message(OrderForm.name)
 async def enter_name(message: Message, state: FSMContext) -> None:
-    name = _clean_text(message)
-    if name is None:
-        await message.answer("Напишите, пожалуйста, имя текстом.")
+    try:
+        # message.text is None для стикеров, фото, голосовых —
+        # валидатор получит пустую строку и вернёт понятную ошибку.
+        name = validate_name(message.text or "")
+    except ValidationError as e:
+        # Остаёмся в том же состоянии: клиент просто пробует ещё раз.
+        await message.answer(str(e))
         return
+
     await state.update_data(name=name)
-    await state.set_state(OrderForm.phone)
-    await _prompt_via_send(message, state, PHONE_TEXT, text_step_keyboard())
+    await _enter_phone_step(message, state)
+
+
+# ── Шаг телефона: контакт, кнопки навигации и ручной ввод ─────────
+# Порядок регистрации важен: сначала специфичные фильтры, в самом
+# конце — общий обработчик текста.
+
+
+@router.message(OrderForm.phone, F.contact)
+async def enter_phone_contact(
+    message: Message, state: FSMContext, catalog: Catalog
+) -> None:
+    """Клиент нажал «Отправить мой номер» — Telegram прислал контакт."""
+    raw = message.contact.phone_number if message.contact else ""
+    try:
+        phone = validate_phone(raw, catalog.school.phone_region)
+    except ValidationError as e:
+        # Крайне маловероятно (номер приходит от Telegram), но
+        # доверять внешним данным вслепую нельзя.
+        await message.answer(str(e))
+        return
+
+    await state.update_data(phone=phone)
+    await drop_reply_keyboard(message)
+    await state.set_state(OrderForm.time)
+    await _prompt_via_send(message, state, TIME_TEXT, text_step_keyboard())
+
+
+@router.message(OrderForm.phone, F.text == NAV_BACK_BTN)
+async def phone_back(message: Message, state: FSMContext) -> None:
+    """«Назад» с шага телефона — reply-кнопка приходит как текст."""
+    await _clear_old_prompt(message, state)
+    await drop_reply_keyboard(message)
+    await state.set_state(OrderForm.name)
+    sent = await message.answer(NAME_TEXT, reply_markup=text_step_keyboard())
+    await state.update_data(prompt_id=sent.message_id)
+
+
+@router.message(OrderForm.phone, F.text == NAV_CANCEL_BTN)
+async def phone_cancel(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(CANCEL_TEXT, reply_markup=ReplyKeyboardRemove())
 
 
 @router.message(OrderForm.phone)
-async def enter_phone(message: Message, state: FSMContext) -> None:
-    phone = _clean_text(message)
-    if phone is None:
-        await message.answer("Напишите, пожалуйста, номер телефона текстом.")
+async def enter_phone_text(
+    message: Message, state: FSMContext, catalog: Catalog
+) -> None:
+    """Номер, введённый вручную."""
+    try:
+        phone = validate_phone(message.text or "", catalog.school.phone_region)
+    except ValidationError as e:
+        await message.answer(str(e))
         return
+
     await state.update_data(phone=phone)
+    await drop_reply_keyboard(message)
     await state.set_state(OrderForm.time)
     await _prompt_via_send(message, state, TIME_TEXT, text_step_keyboard())
 
 
 @router.message(OrderForm.time)
 async def enter_time(message: Message, state: FSMContext) -> None:
-    time = _clean_text(message)
-    if time is None:
-        await message.answer("Напишите, пожалуйста, удобное время текстом.")
+    try:
+        time = validate_time(message.text or "")
+    except ValidationError as e:
+        await message.answer(str(e))
         return
+
     await state.update_data(time=time)
     await state.set_state(OrderForm.comment)
     await _prompt_via_send(message, state, COMMENT_TEXT, comment_keyboard())
@@ -189,12 +271,22 @@ async def enter_time(message: Message, state: FSMContext) -> None:
 
 @router.message(OrderForm.comment)
 async def enter_comment(message: Message, state: FSMContext, catalog: Catalog) -> None:
-    comment = _clean_text(message)
-    if comment is None:
+    try:
+        comment = validate_comment(message.text or "")
+    except ValidationError as e:
+        await message.answer(str(e))
+        return
+
+    if not comment:
+        # Пустое сообщение или стикер на необязательном шаге —
+        # подсказываем, что есть кнопка «Пропустить».
         await message.answer("Напишите комментарий текстом или нажмите «Пропустить».")
         return
+
     await state.update_data(comment=comment)
-    await _go_to_confirm_via_send(message, state, catalog)
+    await state.set_state(OrderForm.confirm)
+    data = await state.get_data()
+    await _prompt_via_send(message, state, _confirm_text(data, catalog), confirm_keyboard())
 
 
 @router.callback_query(F.data == ORDER_SKIP, StateFilter(OrderForm.comment))
@@ -208,12 +300,6 @@ async def skip_comment(callback: CallbackQuery, state: FSMContext, catalog: Cata
     data = await state.get_data()
     await _prompt_via_edit(message, state, _confirm_text(data, catalog), confirm_keyboard())
     await callback.answer()
-
-
-async def _go_to_confirm_via_send(message: Message, state: FSMContext, catalog: Catalog) -> None:
-    await state.set_state(OrderForm.confirm)
-    data = await state.get_data()
-    await _prompt_via_send(message, state, _confirm_text(data, catalog), confirm_keyboard())
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -244,11 +330,15 @@ async def go_back(callback: CallbackQuery, state: FSMContext, catalog: Catalog) 
         await state.set_state(OrderForm.for_whom)
         await _prompt_via_edit(message, state, FOR_WHOM_TEXT, for_whom_keyboard())
     elif current == OrderForm.phone.state:
+        # Штатно «Назад» на этом шаге — reply-кнопка (см. phone_back).
+        # Ветка нужна на случай нажатия inline-кнопки из старого сообщения.
+        await drop_reply_keyboard(message)
         await state.set_state(OrderForm.name)
         await _prompt_via_edit(message, state, NAME_TEXT, text_step_keyboard())
     elif current == OrderForm.time.state:
-        await state.set_state(OrderForm.phone)
-        await _prompt_via_edit(message, state, PHONE_TEXT, text_step_keyboard())
+        # Возврат на шаг телефона: нужна reply-клавиатура, а её
+        # нельзя навесить через edit — уходим новым сообщением.
+        await _enter_phone_step(message, state)
     elif current == OrderForm.comment.state:
         await state.set_state(OrderForm.time)
         await _prompt_via_edit(message, state, TIME_TEXT, text_step_keyboard())
@@ -264,9 +354,7 @@ async def cancel_order(callback: CallbackQuery, state: FSMContext) -> None:
     message = _require_message(callback)
     await state.clear()
     if message is not None:
-        await message.edit_text(
-            "Заявка отменена. Чтобы записаться заново — отправьте /start."
-        )
+        await message.edit_text(CANCEL_TEXT)
     await callback.answer()
 
 
@@ -275,14 +363,15 @@ async def cancel_order_command(message: Message, state: FSMContext) -> None:
     """Текстовый аналог кнопки «Отмена» — на случай, если клиент
     печатает /cancel вместо нажатия кнопки."""
     await state.clear()
-    await message.answer("Заявка отменена. Чтобы записаться заново — отправьте /start.")
+    # ReplyKeyboardRemove на случай, если отмена пришла с шага телефона.
+    await message.answer(CANCEL_TEXT, reply_markup=ReplyKeyboardRemove())
 
 
 @router.callback_query(F.data == ORDER_CONFIRM, StateFilter(OrderForm.confirm))
 async def confirm_order(callback: CallbackQuery, state: FSMContext) -> None:
     message = _require_message(callback)
-    # Фаза 3 — заглушка. В Фазе 5 здесь появится сохранение в SQLite,
-    # в Фазе 7 — уведомление администраторам.
+    # Фаза 4 — по-прежнему заглушка. В Фазе 5 здесь появится сохранение
+    # в SQLite, в Фазе 7 — уведомление администраторам.
     await state.clear()
     if message is not None:
         await message.edit_text(
@@ -301,15 +390,9 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext) -> None:
 # ══════════════════════════════════════════════════════════════════
 @router.callback_query(F.data.in_({ORDER_BACK, ORDER_CANCEL, ORDER_CONFIRM, ORDER_SKIP}))
 async def stale_nav(callback: CallbackQuery) -> None:
-    await callback.answer(
-        "Эта форма уже завершена. Отправьте /start, чтобы начать заново.",
-        show_alert=True,
-    )
+    await callback.answer(STALE_TEXT, show_alert=True)
 
 
 @router.callback_query(ForWhomCallback.filter())
 async def stale_for_whom(callback: CallbackQuery) -> None:
-    await callback.answer(
-        "Эта форма уже завершена. Отправьте /start, чтобы начать заново.",
-        show_alert=True,
-    )
+    await callback.answer(STALE_TEXT, show_alert=True)

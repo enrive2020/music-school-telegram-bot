@@ -13,8 +13,10 @@ pydantic-settings==2.15.0
 # Чтение YAML-конфига с направлениями обучения.
 PyYAML==6.0.3
 
+# Разбор и нормализация телефонов (порт Google libphonenumber).
+phonenumbers==9.0.36
+
 # Дальше по фазам добавим:
-#   phonenumbers  — нормализация телефонов        (Фаза 4)
 #   aiosqlite     — локальная база заявок          (Фаза 5)
 #   gspread       — выгрузка в Google Sheets       (Фаза 6)
 #   pytest        — тесты                          (Фаза 8)
