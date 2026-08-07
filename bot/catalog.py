@@ -7,6 +7,7 @@
 """
 
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -48,6 +49,28 @@ class SchoolInfo(BaseModel):
     # Двухбуквенный код страны (ISO 3166-1 alpha-2) для разбора
     # телефонов, введённых без кода страны.
     phone_region: str = Field(default="RU", pattern=r"^[A-Z]{2}$")
+
+    # Часовой пояс школы: в базе время хранится в UTC, а владельцу
+    # в таблице и уведомлениях показывается местное.
+    timezone: str = "Europe/Moscow"
+
+    @field_validator("timezone")
+    @classmethod
+    def _tz_exists(cls, value: str) -> str:
+        # Проверяем на старте: опечатка «Europe/Moskow» иначе всплыла бы
+        # только при первой выгрузке заявки.
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError:
+            raise ValueError(
+                f"неизвестный часовой пояс '{value}'. "
+                "Примеры: Europe/Moscow, Asia/Almaty, Europe/Minsk"
+            ) from None
+        return value
+
+    @property
+    def tzinfo(self) -> ZoneInfo:
+        return ZoneInfo(self.timezone)
 
 
 class Catalog(BaseModel):
