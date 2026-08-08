@@ -21,6 +21,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import BotCommand
 
 from bot.catalog import CatalogError, load_catalog
 from bot.handlers.admin import router as admin_router
@@ -108,6 +109,9 @@ async def main() -> None:
         orders=orders,
         notifier=notifier,
         schedule=schedule,
+        # Нужен фильтру IsAdminChat: админ-команды показывают
+        # персональные данные клиентов и открыты только этому чату.
+        admin_chat_id=settings.admin_chat_id,
     )
 
     # Порядок важен: роутеры команд (start, admin) идут ПЕРВЫМИ, чтобы
@@ -138,6 +142,16 @@ async def main() -> None:
             "GOOGLE_SHEET_ID не задан — выгрузка в таблицу выключена, "
             "заявки копятся в локальной базе"
         )
+
+    # Подсказки команд в интерфейсе Telegram (кнопка «Меню» у поля
+    # ввода). Публикуем только клиентские: /stats и /orders в общем
+    # списке выглядели бы приглашением их попробовать.
+    await bot.set_my_commands(
+        [
+            BotCommand(command="start", description="Записаться на пробное занятие"),
+            BotCommand(command="cancel", description="Отменить текущую заявку"),
+        ]
+    )
 
     try:
         logging.info("Бот запускается (long polling)…")

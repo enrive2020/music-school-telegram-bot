@@ -6,6 +6,7 @@
 """
 
 import logging
+import sqlite3
 from pathlib import Path
 
 import aiosqlite
@@ -65,7 +66,25 @@ async def connect(db_path: str | Path) -> aiosqlite.Connection:
     # WAL (write-ahead logging): чтение не блокирует запись и наоборот.
     # Для бота, который параллельно принимает заявки и выгружает их
     # фоновой задачей, это заметно снижает шанс «database is locked».
-    await conn.execute("PRAGMA journal_mode=WAL")
+    #
+    # Но WAL требует разделяемой памяти (файл -shm), а она есть не везде:
+    # не работает на сетевых файловых системах (NFS, SMB) и на папках,
+    # проброшенных в контейнер с Windows-хоста. Там включение WAL
+    # роняет запуск с «unable to open database file».
+    #
+    # Поэтому режим необязателен: не вышло — работаем на журнале по
+    # умолчанию. Это медленнее при одновременных чтении и записи,
+    # но полностью корректно. Ронять бота из-за оптимизации нельзя.
+    try:
+        await conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError as e:
+        logger.warning(
+            "WAL недоступен на этой файловой системе (%s). "
+            "Работаем в обычном режиме журнала — это безопасно, "
+            "но при высокой нагрузке возможны задержки записи.",
+            e,
+        )
+
     # Проверять внешние ключи (пригодится, когда появятся связанные таблицы).
     await conn.execute("PRAGMA foreign_keys=ON")
     await conn.commit()

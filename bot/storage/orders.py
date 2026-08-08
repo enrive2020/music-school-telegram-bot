@@ -162,6 +162,21 @@ class OrderRepository:
         )
         await self._conn.commit()
 
+    async def count_since(self, moment: datetime) -> int:
+        """Сколько заявок создано начиная с указанного момента.
+
+        Даты в базе — ISO-строки в UTC, поэтому сравнение строк здесь
+        работает так же верно, как сравнение дат: ISO 8601 специально
+        устроен так, чтобы лексикографический порядок совпадал
+        с хронологическим.
+        """
+        async with self._conn.execute(
+            "SELECT COUNT(*) AS cnt FROM orders WHERE created_at >= ?",
+            (moment.isoformat(),),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return row["cnt"] if row else 0
+
     async def count_by_status(self) -> dict[str, int]:
         """Сводка «сколько заявок в каком состоянии» — для мониторинга."""
         async with self._conn.execute(

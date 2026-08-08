@@ -9,6 +9,7 @@
 теста ломает подсчёт, и падение выглядит случайным.
 """
 
+import sqlite3
 from collections.abc import AsyncIterator
 
 import pytest
@@ -54,6 +55,45 @@ def make_order(**overrides) -> NewOrder:
     )
     data.update(overrides)
     return NewOrder(**data)
+
+
+class TestConnection:
+    async def test_creates_missing_directory(self, tmp_path) -> None:
+        """При первом запуске папки data/ может не быть."""
+        conn = await connect(tmp_path / "nested" / "deep" / "orders.db")
+        await conn.close()
+        assert (tmp_path / "nested" / "deep" / "orders.db").exists()
+
+    async def test_survives_filesystem_without_wal(self, tmp_path, monkeypatch) -> None:
+        """Недоступный WAL не должен ронять запуск.
+
+        Регрессия на реальный дефект: в контейнере с папкой,
+        проброшенной с Windows-хоста, PRAGMA journal_mode=WAL падает
+        с «unable to open database file», и бот не стартовал вообще.
+        WAL — оптимизация, а не требование: без него работаем медленнее,
+        но полностью корректно.
+
+        monkeypatch подменяет execute так, чтобы запрос WAL падал,
+        а все остальные проходили — имитируем такую файловую систему.
+        """
+        import aiosqlite
+
+        original = aiosqlite.Connection.execute
+
+        async def execute_without_wal(self, sql, *args, **kwargs):
+            if "journal_mode=WAL" in sql:
+                raise sqlite3.OperationalError("unable to open database file")
+            return await original(self, sql, *args, **kwargs)
+
+        monkeypatch.setattr(aiosqlite.Connection, "execute", execute_without_wal)
+
+        # Подключение и работа с базой должны пройти штатно.
+        conn = await connect(tmp_path / "no_wal.db")
+        await init_schema(conn)
+        repo = OrderRepository(conn)
+        order = await repo.create(make_order())
+        assert order.id == 1
+        await conn.close()
 
 
 class TestCreate:

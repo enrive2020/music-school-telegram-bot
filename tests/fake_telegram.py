@@ -129,14 +129,19 @@ class FakeSession(BaseSession):
         self.sent.clear()
 
 
-def make_message(text: str, message_id: int = 1) -> Update:
-    """Апдейт «пользователь прислал текст»."""
+def make_message(text: str, message_id: int = 1, chat_id: int | None = None) -> Update:
+    """Апдейт «пользователь прислал текст».
+
+    chat_id задаётся при создании: объекты aiogram — неизменяемые
+    pydantic-модели, поменять chat.id после конструирования нельзя.
+    """
+    chat = TEST_CHAT if chat_id is None else Chat(id=chat_id, type="supergroup")
     return Update(
         update_id=message_id,
         message=Message(
             message_id=message_id,
             date=datetime.now(timezone.utc),
-            chat=TEST_CHAT,
+            chat=chat,
             from_user=TEST_USER,
             text=text,
         ),
