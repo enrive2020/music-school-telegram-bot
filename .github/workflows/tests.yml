@@ -1,0 +1,66 @@
+# ═══════════════════════════════════════════════════════════════
+#  Автоматическая проверка кода на серверах GitHub.
+#
+#  Запускается при каждом Pull Request и при пуше в main. Результат
+#  виден прямо в PR: зелёная галочка или красный крест со ссылкой
+#  на лог. Забыть прогнать тесты перед мержем больше нельзя.
+#
+#  Никаких секретов здесь не нужно: тесты не читают .env и не ходят
+#  в Telegram или Google — внешние сервисы заглушены.
+# ═══════════════════════════════════════════════════════════════
+name: Тесты
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  tests:
+    name: pytest
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Забрать код
+        uses: actions/checkout@v4
+
+      - name: Поставить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          # Кеш скачанных пакетов между запусками: без него каждая
+          # проверка заново тянет aiogram и gspread из сети.
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Установить зависимости
+        run: pip install -r requirements-dev.txt
+
+      - name: Прогнать тесты
+        run: pytest
+
+  docker:
+    name: Сборка образа
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Забрать код
+        uses: actions/checkout@v4
+
+      # Проверяем, что образ вообще собирается. Ошибка в Dockerfile
+      # иначе обнаружится только при деплое — то есть в худший момент.
+      - name: Собрать образ
+        run: docker build -t music-school-bot:ci .
+
+      # И что внутрь не попали секреты. Проверка дешёвая, а цена
+      # ошибки — утёкший в публичный образ токен.
+      - name: Убедиться, что секретов нет в образе
+        run: |
+          found=$(docker run --rm --entrypoint sh music-school-bot:ci -c \
+            "find /app -name '.env' -o -name '*credentials*' -o -name '*.pem'")
+          if [ -n "$found" ]; then
+            echo "В образе найдены файлы, похожие на секреты:"
+            echo "$found"
+            exit 1
+          fi
+          echo "Секретов в образе нет"

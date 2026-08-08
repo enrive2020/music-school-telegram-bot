@@ -1,0 +1,14 @@
+# Зависимости для разработки и тестов.
+# На сервере не нужны — там ставится только requirements.txt.
+#
+# Установка:
+#   .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+
+-r requirements.txt
+
+# Фреймворк тестов: обычная функция с assert вместо классов unittest.
+pytest==9.1.1
+
+# Без него pytest не умеет запускать «async def test_…»,
+# а у нас асинхронная база и асинхронные обработчики.
+pytest-asyncio==1.4.0

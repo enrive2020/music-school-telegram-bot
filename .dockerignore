@@ -1,0 +1,44 @@
+# Что НЕ должно попасть в образ.
+#
+# Работает как .gitignore, но для сборки. Важно по двум причинам:
+# образ остаётся маленьким, а секреты не запекаются внутрь слоёв —
+# оттуда их потом не вырезать, даже удалив файл следующей командой.
+
+# ── Секреты: попадают в контейнер через env_file и volume, но НИКОГДА
+#    не копируются внутрь образа ──
+.env
+.env.local
+secrets/
+*credentials*.json
+*.pem
+
+# ── Данные и логи: приезжают из volume'ов хоста ──
+data/
+logs/
+
+# ── Окружение разработки ──
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Git и документация: в рантайме не нужны ──
+.git/
+.gitignore
+.gitattributes
+docs/
+README.md
+
+# ── Тесты не запускаются в проде ──
+tests/
+pytest.ini
+requirements-dev.txt
+
+# ── Мусор редакторов и ОС ──
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
